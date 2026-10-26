@@ -6,6 +6,7 @@ A small macOS menu-bar app for people who run a **Project Zomboid dedicated serv
 - Restarts your watcher command within 30 seconds if that dies.
 - Shows in the menu bar whether the server is running, when it last checked Steam, and which mods are out of date.
 - Each out-of-sync mod has a submenu of fixes: update the server now, show the changed files, upload with [Zomboid Workshop Manager](https://github.com/lilPZmods/zomboid-workshop-manager), or replace your local files with the Steam copy. Your watcher decides which fixes to offer.
+- Checks right away when [Zomboid Workshop Manager](https://github.com/lilPZmods/zomboid-workshop-manager) finishes an upload. It listens for the `io.github.lilpzmods.zomboid-workshop.uploaded` notification.
 - Turns off with one click, and stays off until you open the app again.
 
 ## What it needs

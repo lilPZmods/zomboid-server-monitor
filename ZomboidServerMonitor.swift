@@ -155,6 +155,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     startChild()
     refreshIcon()
     Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.refreshIcon() }
+    // Zomboid Workshop Manager announces each upload. Check now, and again a
+    // little later in case Steam's web API has not caught up yet.
+    DistributedNotificationCenter.default().addObserver(
+      forName: .init("io.github.lilpzmods.zomboid-workshop.uploaded"), object: nil, queue: .main
+    ) { [weak self] _ in
+      self?.checkNow()
+      DispatchQueue.main.asyncAfter(deadline: .now() + 30) { self?.checkNow() }
+    }
   }
 
   /// launchd owns the real instance. Turn the agent on and step aside.
