@@ -31,6 +31,8 @@ let agentLabel = setting("WWAgentLabel") ?? "zomboid-server-monitor"
 let workDir = NSString(string: setting("WWWorkDir") ?? "~").expandingTildeInPath
 let watchCommand = commandSetting("WWWatchCommand")
 let offCommand = commandSetting("WWOffCommand")
+/// "USR1": Check Now sends SIGUSR1 to the watch command. Empty: restart it.
+let checkSignal = setting("WWCheckSignal") ?? ""
 let logFile = resolve(setting("WWLogFile") ?? "zomboid-server-monitor.log")
 let statusFile = setting("WWStatusFile").map(resolve)
 let searchPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -68,11 +70,26 @@ func launchctl(_ args: String...) -> Int32 { run(["/bin/launchctl"] + args).stat
 /// Optional JSON status written by the watcher:
 /// { "checked_at": <unix s>, "server_running": bool,
 ///   "mods": [{ "title": str, "server": "current"|..., "local": "match"|"differs" }] }
+/// A fix the watcher offers for one mod, shown as a menu item.
+struct FixAction {
+  var title: String
+  var command: [String]
+  var confirm: String?
+  var showsOutput: Bool
+}
+
+struct ModProblem {
+  var name: String
+  var problem: String
+  var actions: [FixAction]
+}
+
 struct Status {
   var checkedAt: Date?
   var serverRunning: Bool?
   var behind: [String] = []
   var notUploaded: [String] = []
+  var problems: [ModProblem] = []
   var hasMods = false
 
   static func load() -> Status {
@@ -85,12 +102,32 @@ struct Status {
       s.hasMods = true
       for mod in mods {
         let name = (mod["title"] as? String) ?? (mod["project"] as? String) ?? (mod["id"] as? String ?? "?")
-        if let state = mod["server"] as? String, state != "current" { s.behind.append("\(name) (\(state))") }
-        if mod["local"] as? String == "differs" { s.notUploaded.append(name) }
+        var problem: String?
+        if let state = mod["server"] as? String, state != "current" {
+          s.behind.append("\(name) (\(state))")
+          problem = "Server copy behind Steam (\(state))"
+        } else if mod["local"] as? String == "differs" {
+          s.notUploaded.append(name)
+          let count = (mod["differences"] as? [Any])?.count ?? 0
+          problem = "\(count) local file\(count == 1 ? "" : "s") not uploaded"
+        }
+        if let problem {
+          let actions = (mod["actions"] as? [[String: Any]] ?? []).map {
+            FixAction(
+              title: $0["title"] as? String ?? "?", command: $0["command"] as? [String] ?? [],
+              confirm: $0["confirm"] as? String, showsOutput: $0["output"] as? Bool ?? false)
+          }
+          s.problems.append(ModProblem(name: name, problem: problem, actions: actions))
+        }
       }
     }
     return s
   }
+}
+
+final class FixBox: NSObject {
+  let action: FixAction
+  init(_ a: FixAction) { action = a }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -218,9 +255,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     if let r = s.serverRunning { info("Server: " + (r ? "running" : "stopped")) }
     if let t = s.checkedAt { info("Last check: " + fmt.string(from: t)) }
     if s.hasMods {
-      if s.behind.isEmpty && s.notUploaded.isEmpty { info("All items up to date") }
-      for m in s.behind { info("⚠︎ Server copy behind: \(m)") }
-      for m in s.notUploaded { info("⚠︎ Local changes not uploaded: \(m)") }
+      if s.problems.isEmpty { info("All mods match Steam") }
+      for p in s.problems {
+        let item = NSMenuItem(title: "⚠︎ \(p.name): \(p.problem)", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for a in p.actions {
+          let entry = NSMenuItem(title: a.title, action: a.command.isEmpty ? nil : #selector(runFix(_:)), keyEquivalent: "")
+          entry.target = self
+          entry.representedObject = FixBox(a)
+          entry.isEnabled = !a.command.isEmpty && runningFix == nil
+          sub.addItem(entry)
+        }
+        if p.actions.isEmpty { sub.addItem(NSMenuItem(title: "No fix available", action: nil, keyEquivalent: "")) }
+        item.submenu = sub
+        menu.addItem(item)
+      }
+      if let r = runningFix { info("Working: \(r)…") }
     }
     menu.addItem(.separator())
     action("Check Now", #selector(checkNow))
@@ -232,9 +282,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
   /// Restarting the watch command makes it check right away.
   @objc func checkNow() {
+    if checkSignal.uppercased() == "USR1", let c = child, c.isRunning {
+      kill(c.processIdentifier, SIGUSR1)
+      DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.refreshIcon() }
+      return
+    }
     stopChild()
     startChild()
     refreshIcon()
+  }
+
+  // MARK: fixes
+
+  var runningFix: String?
+
+  @objc func runFix(_ sender: NSMenuItem) {
+    guard let action = (sender.representedObject as? FixBox)?.action, !action.command.isEmpty else { return }
+    if let question = action.confirm {
+      let alert = NSAlert()
+      alert.messageText = action.title.replacingOccurrences(of: "…", with: "") + "?"
+      alert.informativeText = question
+      alert.addButton(withTitle: "Continue")
+      alert.addButton(withTitle: "Cancel")
+      NSApp.activate(ignoringOtherApps: true)
+      guard alert.runModal() == .alertFirstButtonReturn else { return }
+    }
+    runningFix = action.title
+    refreshIcon()
+    DispatchQueue.global().async {
+      let result = run(action.command)
+      DispatchQueue.main.async {
+        self.runningFix = nil
+        if action.showsOutput || result.status != 0 {
+          self.showText(title: action.title.replacingOccurrences(of: "…", with: ""), text: result.output, failed: result.status != 0)
+        }
+        self.checkNow()
+      }
+    }
+  }
+
+  func showText(title: String, text: String, failed: Bool) {
+    let alert = NSAlert()
+    alert.messageText = failed ? "\(title) failed" : title
+    alert.alertStyle = failed ? .warning : .informational
+    let scroll = NSTextView.scrollableTextView()
+    scroll.frame = NSRect(x: 0, y: 0, width: 620, height: 320)
+    if let tv = scroll.documentView as? NSTextView {
+      tv.string = text.isEmpty ? "(no output)" : text
+      tv.isEditable = false
+      tv.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+    }
+    alert.accessoryView = scroll
+    NSApp.activate(ignoringOtherApps: true)
+    alert.runModal()
   }
 
   @objc func openLog() {

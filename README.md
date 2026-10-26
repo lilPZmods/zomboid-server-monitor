@@ -5,6 +5,7 @@ A small macOS menu-bar app for people who run a **Project Zomboid dedicated serv
 - Starts at login and comes back by itself if it crashes or is killed.
 - Restarts your watcher command within 30 seconds if that dies.
 - Shows in the menu bar whether the server is running, when it last checked Steam, and which mods are out of date.
+- Each out-of-sync mod has a submenu of fixes: update the server now, show the changed files, upload with [Zomboid Workshop Manager](https://github.com/lilPZmods/zomboid-workshop-manager), or replace your local files with the Steam copy. Your watcher decides which fixes to offer.
 - Turns off with one click, and stays off until you open the app again.
 
 ## What it needs
@@ -33,6 +34,7 @@ cp config.example.env config.env   # then edit config.env
 | `WATCH_COMMAND` | The command to keep running. Separate arguments with `\|`, e.g. `/opt/homebrew/bin/node\|native-server.mjs\|watch` |
 | `LOG_FILE` | Where the watch command's output goes (relative to `WORK_DIR`) |
 | `STATUS_FILE` | Optional JSON file the watcher writes after each check (format below) |
+| `CHECK_SIGNAL` | `USR1` if your watch command checks right away when it gets SIGUSR1. Empty: "Check Now" restarts the command instead |
 | `OFF_COMMAND` | Optional command run by "Turn Watcher Off". Leave empty to just unload the agent |
 
 After changing `config.env`, run `./build.sh` again.
@@ -55,11 +57,29 @@ If your watcher writes this JSON after each check, the menu shows it:
 - `server` is anything other than `"current"`: the mod is listed as behind Steam.
 - `local` is `"differs"`: your local copy has changes that aren't uploaded yet. With Project Zomboid that gets you kicked for a checksum mismatch when you join.
 
+Each mod can also list fixes for its submenu:
+
+```json
+"actions": [
+  { "title": "Update Server Now", "command": ["/opt/homebrew/bin/node", "server.mjs", "fix", "123", "update-server"],
+    "confirm": "Restart the server now?" },
+  { "title": "Show Changed Files", "command": ["/opt/homebrew/bin/node", "server.mjs", "fix", "123", "show"], "output": true },
+  { "title": "Upload with Zomboid Workshop Manager", "command": ["/usr/bin/open", "zomboid-workshop-manager://item/123"] }
+]
+```
+
+- `command` runs in `WORK_DIR`. Leave it empty (`[]`) to show a note that can't be clicked.
+- `confirm` asks first.
+- `output: true` shows what the command printed. A failed command always shows its output.
+
+After a fix finishes, the app runs **Check Now**.
+
 ## Using it
 
 Click the circular-arrows icon in the menu bar:
 
-- **Check Now** restarts the watch command, so it checks right away.
+- **Check Now** makes the watch command check right away.
+- **⚠︎ mod name** submenus list the fixes for that mod.
 - **Open Log** opens the watcher log in Console.
 - **Open Project Folder** opens `WORK_DIR` in Finder.
 - **Turn Watcher Off…** stops everything. It stays off through reboots until you open the app from /Applications again.

@@ -41,6 +41,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>WWLogFile</key><string>$(xml "$LOG_FILE")</string>
   <key>WWStatusFile</key><string>$(xml "$STATUS_FILE")</string>
   <key>WWOffCommand</key><string>$(xml "$OFF_COMMAND")</string>
+  <key>WWCheckSignal</key><string>$(xml "${CHECK_SIGNAL:-}")</string>
 </dict>
 </plist>
 PLIST
